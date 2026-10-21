@@ -7,7 +7,7 @@
 - [x] Minimal MOVE/MINE task lifecycle and postcondition verification.
 - [x] Automated build workflow.
 - [x] GitHub Actions compile success on JDK 25 / Gradle 9.6.0 (2026-10-21).
-- [ ] Downloadable GitHub Actions artifact verified after workflow update.
+- [x] Downloadable worker-core-26.3 artifact verified in successful run 39559811836 (2026-10-21).
 - [ ] Disposable-server smoke tests.
 - [ ] Fix any version-specific build or runtime issues found by CI.
 
