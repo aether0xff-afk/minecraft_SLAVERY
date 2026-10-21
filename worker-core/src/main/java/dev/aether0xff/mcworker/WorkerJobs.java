@@ -17,6 +17,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Item;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
@@ -51,6 +52,8 @@ final class WorkerJobs {
         final BlockPos blockPos;
         final BlockState initialBlock;
         final Block expectedBlock;
+        final Item expectedItem;
+        final int startingItemCount;
         final BlockPos support;
         final Direction supportFace;
         final int startTick;
@@ -59,8 +62,8 @@ final class WorkerJobs {
         double bestDistanceSq;
 
         Job(PuppetPlayer player, WorkerResult.Kind kind, Vec3 goal,
-            BlockPos blockPos, BlockState initialBlock, Block expectedBlock,
-            BlockPos support, Direction supportFace, int tick) {
+            BlockPos blockPos, BlockState initialBlock, Block expectedBlock, Item expectedItem,
+            int startingItemCount, BlockPos support, Direction supportFace, int tick) {
             this.id = player.getUUID();
             this.name = player.getGameProfile().name();
             this.kind = kind;
@@ -69,6 +72,8 @@ final class WorkerJobs {
             this.blockPos = blockPos;
             this.initialBlock = initialBlock;
             this.expectedBlock = expectedBlock;
+            this.expectedItem = expectedItem;
+            this.startingItemCount = startingItemCount;
             this.support = support;
             this.supportFace = supportFace;
             this.startTick = tick;
@@ -101,7 +106,7 @@ final class WorkerJobs {
                             WorkerResult.Reason.PATH_BLOCKED, 0));
             return WorkerCommands.fail(source, "PATH_BLOCKED: navigation could not start");
         }
-        Job job = new Job(player, WorkerResult.Kind.MOVE, goal, null, null, null, null,
+        Job job = new Job(player, WorkerResult.Kind.MOVE, goal, null, null, null, null, 0, null,
                 null, source.getServer().getTickCount());
         ACTIVE.put(player.getUUID(), job);
         return WorkerCommands.success(source, "MOVE started; actual arrival will be verified");
@@ -134,7 +139,7 @@ final class WorkerJobs {
         }
         PuppetBridge.stop(player);
         Job job = new Job(player, WorkerResult.Kind.MINE, center, target.immutable(),
-                initial, null, null, null, source.getServer().getTickCount());
+                initial, null, null, 0, null, null, source.getServer().getTickCount());
         ACTIVE.put(player.getUUID(), job);
         return WorkerCommands.success(source, "MINE started; aiming and block removal are checked");
     }
@@ -174,7 +179,8 @@ final class WorkerJobs {
         if (support == null) return WorkerCommands.fail(source, "UNREACHABLE: no nearby support face");
         PuppetBridge.stop(player);
         Job job = new Job(player, WorkerResult.Kind.PLACE, hit, target.immutable(),
-                level.getBlockState(target), expected, support, face, source.getServer().getTickCount());
+                level.getBlockState(target), expected, stack.getItem(), countInventory(player, stack.getItem()),
+                support, face, source.getServer().getTickCount());
         ACTIVE.put(player.getUUID(), job);
         return WorkerCommands.success(source, "PLACE started; actual block and item consumption will be checked");
     }
@@ -259,7 +265,8 @@ final class WorkerJobs {
         ServerLevel level = player.level();
         if (!level.hasChunkAt(job.blockPos)) return WorkerResult.Reason.UNLOADED_CHUNK;
         BlockState state = level.getBlockState(job.blockPos);
-        if (state.isAir()) return WorkerResult.Reason.BLOCK_REMOVED;
+        if (state.isAir()) return job.actionTick < 0
+                ? WorkerResult.Reason.TARGET_CHANGED : WorkerResult.Reason.BLOCK_REMOVED;
         if (!state.equals(job.initialBlock)) return WorkerResult.Reason.TARGET_CHANGED;
         if (player.getEyePosition().distanceToSqr(job.goal) > REACH * REACH) return WorkerResult.Reason.UNREACHABLE;
         if (tick - job.startTick >= MINE_TIMEOUT_TICKS) return WorkerResult.Reason.TIMEOUT;
@@ -285,7 +292,13 @@ final class WorkerJobs {
             return WorkerResult.Reason.UNLOADED_CHUNK;
         }
         BlockState state = level.getBlockState(job.blockPos);
-        if (state.is(job.expectedBlock)) return WorkerResult.Reason.BLOCK_PLACED;
+        if (state.is(job.expectedBlock)) {
+            if (job.actionTick < 0) return WorkerResult.Reason.TARGET_CHANGED;
+            if (countInventory(player, job.expectedItem) < job.startingItemCount) {
+                return WorkerResult.Reason.BLOCK_PLACED;
+            }
+            return WorkerResult.Reason.ITEM_MISSING; // no observed survival item consumption
+        }
         if (!state.isAir()) return WorkerResult.Reason.TARGET_CHANGED;
         if (tick - job.startTick >= INTERACT_TIMEOUT_TICKS) return WorkerResult.Reason.TIMEOUT;
         if (player.getEyePosition().distanceToSqr(job.goal) > REACH * REACH) {
@@ -309,6 +322,15 @@ final class WorkerJobs {
             return WorkerResult.Reason.TIMEOUT;
         }
         return null;
+    }
+
+    private static int countInventory(PuppetPlayer player, Item item) {
+        int total = 0;
+        for (int slot = 0; slot < player.getInventory().getContainerSize(); slot++) {
+            ItemStack stack = player.getInventory().getItem(slot);
+            if (stack.is(item)) total += stack.getCount();
+        }
+        return total;
     }
 
     private static Vec3 faceCenter(BlockPos support, Direction outward) {
