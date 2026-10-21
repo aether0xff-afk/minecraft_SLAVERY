@@ -162,6 +162,7 @@ final class WorkerJobs {
         BlockPos support = null;
         Direction face = null;
         Vec3 hit = null;
+        double nearestSupport = Double.POSITIVE_INFINITY;
         // Only place against an existing solid support; no free-floating placement.
         for (Direction candidate : Direction.values()) {
             BlockPos adjacent = target.relative(candidate.getOpposite());
@@ -170,7 +171,14 @@ final class WorkerJobs {
             if (base.isAir() || !base.getFluidState().isEmpty()) continue;
             if (level.getBlockEntity(adjacent) != null) continue; // never open/interact with storage here
             Vec3 point = faceCenter(adjacent, candidate);
-            if (player.getEyePosition().distanceToSqr(point) > REACH * REACH) continue;
+            Vec3 eye = player.getEyePosition();
+            double eyeSide = (eye.x - adjacent.getX() - 0.5) * candidate.getStepX()
+                    + (eye.y - adjacent.getY() - 0.5) * candidate.getStepY()
+                    + (eye.z - adjacent.getZ() - 0.5) * candidate.getStepZ();
+            if (eyeSide <= 0.1) continue; // cannot see the outward face from the other side
+            double distance = eye.distanceToSqr(point);
+            if (distance > REACH * REACH || distance >= nearestSupport) continue;
+            nearestSupport = distance;
             support = adjacent.immutable();
             face = candidate;
             hit = point;
