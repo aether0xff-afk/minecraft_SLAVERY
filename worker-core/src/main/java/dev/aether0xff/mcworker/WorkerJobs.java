@@ -2,53 +2,75 @@ package dev.aether0xff.mcworker;
 
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 
 import me.senseiwells.puppet.PuppetPlayer;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.network.chat.Component;
+import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.item.BlockItem;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 
 /**
- * Main-server-thread-only milestone jobs.
- * Puppet actions finishing is NOT considered proof that the world goal succeeded.
+ * One-job-per-puppet deterministic executor. All world access happens on server thread.
+ * "Action accepted" never means success: completion is based on world postconditions.
  */
 final class WorkerJobs {
     private WorkerJobs() {}
 
-    private enum Kind { MOVE, MINE }
-    private static final Map<UUID, Job> ACTIVE = new LinkedHashMap<>();
     private static final int MOVE_TIMEOUT_TICKS = 1200;
     private static final int MOVE_STALL_TICKS = 200;
+    private static final int INTERACT_TIMEOUT_TICKS = 120;
     private static final int MINE_TIMEOUT_TICKS = 600;
+    private static final double MAX_MOVE_DISTANCE = 48.0;
     private static final double REACH = 4.5;
+    private static final double ARRIVAL_SQ = 2.25;
+
+    private static final Map<UUID, Job> ACTIVE = new LinkedHashMap<>();
+    private static final Map<UUID, WorkerResult> LAST = new LinkedHashMap<>();
 
     private static final class Job {
         final UUID id;
         final String name;
-        final Kind kind;
+        final WorkerResult.Kind kind;
+        final ResourceKey<Level> dimension;
         final Vec3 goal;
         final BlockPos blockPos;
         final BlockState initialBlock;
+        final Block expectedBlock;
+        final BlockPos support;
+        final Direction supportFace;
         final int startTick;
         int lastProgressTick;
+        int actionTick = -1;
         double bestDistanceSq;
-        boolean miningStarted;
 
-        Job(ServerPlayer player, Kind kind, Vec3 goal, BlockPos blockPos, BlockState initialBlock,
-            int tick) {
+        Job(PuppetPlayer player, WorkerResult.Kind kind, Vec3 goal,
+            BlockPos blockPos, BlockState initialBlock, Block expectedBlock,
+            BlockPos support, Direction supportFace, int tick) {
             this.id = player.getUUID();
             this.name = player.getGameProfile().name();
             this.kind = kind;
+            this.dimension = player.level().dimension();
             this.goal = goal;
             this.blockPos = blockPos;
             this.initialBlock = initialBlock;
+            this.expectedBlock = expectedBlock;
+            this.support = support;
+            this.supportFace = supportFace;
             this.startTick = tick;
             this.lastProgressTick = tick;
             this.bestDistanceSq = player.position().distanceToSqr(goal);
@@ -56,143 +78,267 @@ final class WorkerJobs {
     }
 
     static int startMove(CommandSourceStack source, String name, Vec3 goal) {
-        ServerPlayer player = getPuppet(source, name);
-        if (player == null) return 0;
-        if (ACTIVE.containsKey(player.getUUID())) {
-            return WorkerCommands.fail(source, "Worker busy; use /worker stop " + name);
-        }
+        PuppetPlayer player = getPuppet(source, name);
+        if (player == null || !available(source, player)) return 0;
         if (!Double.isFinite(goal.x) || !Double.isFinite(goal.y) || !Double.isFinite(goal.z)) {
-            return WorkerCommands.fail(source, "Invalid position");
+            return WorkerCommands.fail(source, "INVALID_POSITION");
         }
-        if (player.position().distanceToSqr(goal) <= 2.25) {
-            return WorkerCommands.success(source, name + " already at requested destination");
+        if (player.position().distanceToSqr(goal) > MAX_MOVE_DISTANCE * MAX_MOVE_DISTANCE) {
+            return WorkerCommands.fail(source, "MOVE_LIMIT: max " + (int) MAX_MOVE_DISTANCE + " blocks per command");
         }
-        MinecraftServer server = source.getServer();
-        PuppetBridge.release(server, name);
-        if (PuppetBridge.move(server, name, goal) <= 0) {
-            return WorkerCommands.fail(source, "PuppetPlayers refused the move command");
+        if (!player.level().hasChunkAt(BlockPos.containing(goal))) {
+            return WorkerCommands.fail(source, "UNLOADED_CHUNK: worker cannot path into unloaded terrain");
         }
-        ACTIVE.put(player.getUUID(),
-                new Job(player, Kind.MOVE, goal, null, null, server.getTickCount()));
-        return WorkerCommands.success(source, "MOVE accepted; arrival will be verified for " + name);
+        if (player.position().distanceToSqr(goal) <= ARRIVAL_SQ) {
+            LAST.put(player.getUUID(),
+                    new WorkerResult(WorkerResult.Kind.MOVE, WorkerResult.State.SUCCEEDED,
+                            WorkerResult.Reason.ALREADY_SATISFIED, 0));
+            return WorkerCommands.success(source, "ALREADY_SATISFIED");
+        }
+        if (!PuppetBridge.move(player, goal)) {
+            LAST.put(player.getUUID(),
+                    new WorkerResult(WorkerResult.Kind.MOVE, WorkerResult.State.FAILED,
+                            WorkerResult.Reason.PATH_BLOCKED, 0));
+            return WorkerCommands.fail(source, "PATH_BLOCKED: navigation could not start");
+        }
+        Job job = new Job(player, WorkerResult.Kind.MOVE, goal, null, null, null, null,
+                null, source.getServer().getTickCount());
+        ACTIVE.put(player.getUUID(), job);
+        return WorkerCommands.success(source, "MOVE started; actual arrival will be verified");
     }
 
     static int startMine(CommandSourceStack source, String name, BlockPos target) {
-        ServerPlayer player = getPuppet(source, name);
-        if (player == null) return 0;
-        if (ACTIVE.containsKey(player.getUUID())) {
-            return WorkerCommands.fail(source, "Worker busy; use /worker stop " + name);
+        PuppetPlayer player = getPuppet(source, name);
+        if (player == null || !available(source, player)) return 0;
+        if (player.isCreative() || player.isSpectator()) {
+            return WorkerCommands.fail(source, "SURVIVAL_REQUIRED");
         }
         ServerLevel level = player.level();
         if (!level.hasChunkAt(target)) {
-            return WorkerCommands.fail(source, "UNLOADED_CHUNK: target must already be loaded");
+            return WorkerCommands.fail(source, "UNLOADED_CHUNK");
         }
-        BlockState state = level.getBlockState(target);
-        if (state.isAir()) return WorkerCommands.success(source, "Target is already air");
-        if (!state.getFluidState().isEmpty() || state.getDestroySpeed(level, target) < 0) {
-            return WorkerCommands.fail(source, "UNBREAKABLE_OR_FLUID");
+        BlockState initial = level.getBlockState(target);
+        if (initial.isAir()) {
+            LAST.put(player.getUUID(),
+                    new WorkerResult(WorkerResult.Kind.MINE, WorkerResult.State.SUCCEEDED,
+                            WorkerResult.Reason.ALREADY_SATISFIED, 0));
+            return WorkerCommands.success(source, "ALREADY_SATISFIED");
+        }
+        if (!initial.getFluidState().isEmpty() || initial.getDestroySpeed(level, target) < 0
+                || level.getBlockEntity(target) != null) {
+            return WorkerCommands.fail(source, "UNSAFE_TARGET: cannot mine fluid, unbreakable or block entity");
         }
         Vec3 center = Vec3.atCenterOf(target);
         if (player.getEyePosition().distanceToSqr(center) > REACH * REACH) {
-            return WorkerCommands.fail(source, "UNREACHABLE: move the worker close to the block first");
+            return WorkerCommands.fail(source, "UNREACHABLE: move closer");
         }
-        MinecraftServer server = source.getServer();
-        PuppetBridge.release(server, name);
-        if (PuppetBridge.aimAt(server, name, center) <= 0) {
-            return WorkerCommands.fail(source, "Unable to aim at target");
+        PuppetBridge.stop(player);
+        Job job = new Job(player, WorkerResult.Kind.MINE, center, target.immutable(),
+                initial, null, null, null, source.getServer().getTickCount());
+        ACTIVE.put(player.getUUID(), job);
+        return WorkerCommands.success(source, "MINE started; aiming and block removal are checked");
+    }
+
+    static int startPlace(CommandSourceStack source, String name, BlockPos target) {
+        PuppetPlayer player = getPuppet(source, name);
+        if (player == null || !available(source, player)) return 0;
+        if (player.isCreative() || player.isSpectator()) {
+            return WorkerCommands.fail(source, "SURVIVAL_REQUIRED");
         }
-        ACTIVE.put(player.getUUID(),
-                new Job(player, Kind.MINE, center, target.immutable(), state, server.getTickCount()));
-        return WorkerCommands.success(source, "MINE accepted; removal will be verified for " + name);
+        ServerLevel level = player.level();
+        if (!level.hasChunkAt(target) || !level.getBlockState(target).isAir()) {
+            return WorkerCommands.fail(source, "TARGET_NOT_AIR_OR_UNLOADED");
+        }
+        ItemStack stack = player.getMainHandItem();
+        if (!(stack.getItem() instanceof BlockItem blockItem) || stack.isEmpty()) {
+            return WorkerCommands.fail(source, "ITEM_MISSING: hold a placeable block in main hand");
+        }
+        Block expected = blockItem.getBlock();
+        BlockPos support = null;
+        Direction face = null;
+        Vec3 hit = null;
+        // Only place against an existing solid support; no free-floating placement.
+        for (Direction candidate : Direction.values()) {
+            BlockPos adjacent = target.relative(candidate.getOpposite());
+            if (!level.hasChunkAt(adjacent)) continue;
+            BlockState base = level.getBlockState(adjacent);
+            if (base.isAir() || !base.getFluidState().isEmpty()) continue;
+            if (level.getBlockEntity(adjacent) != null) continue; // never open/interact with storage here
+            Vec3 point = faceCenter(adjacent, candidate);
+            if (player.getEyePosition().distanceToSqr(point) > REACH * REACH) continue;
+            support = adjacent.immutable();
+            face = candidate;
+            hit = point;
+            break;
+        }
+        if (support == null) return WorkerCommands.fail(source, "UNREACHABLE: no nearby support face");
+        PuppetBridge.stop(player);
+        Job job = new Job(player, WorkerResult.Kind.PLACE, hit, target.immutable(),
+                level.getBlockState(target), expected, support, face, source.getServer().getTickCount());
+        ACTIVE.put(player.getUUID(), job);
+        return WorkerCommands.success(source, "PLACE started; actual block and item consumption will be checked");
     }
 
     static int status(CommandSourceStack source, String name) {
-        ServerPlayer player = getPuppet(source, name);
+        PuppetPlayer player = getPuppet(source, name);
         if (player == null) return 0;
-        Job job = ACTIVE.get(player.getUUID());
-        String state = job == null ? "IDLE" : job.kind + " running for "
-                + (source.getServer().getTickCount() - job.startTick) + " ticks";
+        Job active = ACTIVE.get(player.getUUID());
+        WorkerResult last = LAST.get(player.getUUID());
         Vec3 p = player.position();
-        return WorkerCommands.success(source, name + " " + state
-                + " dimension=" + player.level().dimension()
-                + " pos=" + String.format(java.util.Locale.ROOT, "(%.1f, %.1f, %.1f)", p.x, p.y, p.z));
+        String current = active == null ? "IDLE" : active.kind + " RUNNING "
+                + (source.getServer().getTickCount() - active.startTick) + " ticks";
+        return WorkerCommands.success(source, name + " " + current
+                + " at " + player.level().dimension() + " "
+                + String.format(Locale.ROOT, "(%.1f,%.1f,%.1f)", p.x, p.y, p.z)
+                + (last == null ? "" : " | last=" + last.summary()));
     }
 
     static int stop(CommandSourceStack source, String name) {
-        ServerPlayer player = getPuppet(source, name);
+        PuppetPlayer player = getPuppet(source, name);
         if (player == null) return 0;
-        ACTIVE.remove(player.getUUID());
-        PuppetBridge.release(source.getServer(), name);
+        Job job = ACTIVE.remove(player.getUUID());
+        PuppetBridge.stop(player);
+        if (job != null) LAST.put(player.getUUID(),
+                new WorkerResult(job.kind, WorkerResult.State.CANCELLED,
+                        WorkerResult.Reason.STOPPED, source.getServer().getTickCount() - job.startTick));
         return WorkerCommands.success(source, "STOPPED " + name);
     }
 
     static void tick(MinecraftServer server) {
         int tick = server.getTickCount();
-        Iterator<Job> iterator = ACTIVE.values().iterator();
-        while (iterator.hasNext()) {
-            Job job = iterator.next();
-            ServerPlayer player = server.getPlayerList().getPlayer(job.id);
-            String outcome;
-            if (!(player instanceof PuppetPlayer)) {
-                outcome = "WORKER_DISCONNECTED";
-            } else if (job.kind == Kind.MOVE) {
-                outcome = updateMove(player, job, tick);
+        Iterator<Job> iter = ACTIVE.values().iterator();
+        while (iter.hasNext()) {
+            Job job = iter.next();
+            ServerPlayer raw = server.getPlayerList().getPlayer(job.id);
+            WorkerResult.Reason result = null;
+            boolean success = false;
+            if (!(raw instanceof PuppetPlayer player)) {
+                result = WorkerResult.Reason.WORKER_DISCONNECTED;
+            } else if (!player.level().dimension().equals(job.dimension)) {
+                result = WorkerResult.Reason.DIMENSION_CHANGED;
             } else {
-                outcome = updateMine(server, player, job, tick);
+                result = switch (job.kind) {
+                    case MOVE -> updateMove(player, job, tick);
+                    case MINE -> updateMine(player, job, tick);
+                    case PLACE -> updatePlace(player, job, tick);
+                };
+                success = result == WorkerResult.Reason.ARRIVED
+                        || result == WorkerResult.Reason.BLOCK_REMOVED
+                        || result == WorkerResult.Reason.BLOCK_PLACED;
             }
-            if (outcome != null) {
-                iterator.remove();
-                if (player instanceof PuppetPlayer) PuppetBridge.release(server, job.name);
-                String message = "[worker] " + job.name + " " + job.kind + ": " + outcome;
+            if (result != null) {
+                iter.remove();
+                if (raw instanceof PuppetPlayer player) PuppetBridge.stop(player);
+                WorkerResult finished = new WorkerResult(job.kind,
+                        success ? WorkerResult.State.SUCCEEDED : WorkerResult.State.FAILED,
+                        result, tick - job.startTick);
+                LAST.put(job.id, finished);
+                String message = "[worker] " + job.name + ": " + finished.summary();
                 server.getPlayerList().broadcastSystemMessage(Component.literal(message), false);
                 WorkerCoreMod.LOGGER.info(message);
             }
         }
     }
 
-    private static String updateMove(ServerPlayer player, Job job, int tick) {
-        double distanceSq = player.position().distanceToSqr(job.goal);
-        if (distanceSq <= 2.25) return "SUCCESS: ARRIVED";
-        if (distanceSq < job.bestDistanceSq - 0.25) {
-            job.bestDistanceSq = distanceSq;
+    private static WorkerResult.Reason updateMove(PuppetPlayer player, Job job, int tick) {
+        double dist = player.position().distanceToSqr(job.goal);
+        if (dist <= ARRIVAL_SQ) return WorkerResult.Reason.ARRIVED;
+        if (!player.level().hasChunkAt(BlockPos.containing(job.goal))) {
+            return WorkerResult.Reason.UNLOADED_CHUNK;
+        }
+        if (dist < job.bestDistanceSq - 0.25) {
+            job.bestDistanceSq = dist;
             job.lastProgressTick = tick;
         }
-        if (tick - job.startTick > MOVE_TIMEOUT_TICKS) return "TIMEOUT: MOVE";
-        if (tick - job.lastProgressTick > MOVE_STALL_TICKS) return "PATH_BLOCKED_OR_STALLED";
+        if (tick - job.startTick >= MOVE_TIMEOUT_TICKS) return WorkerResult.Reason.TIMEOUT;
+        if (tick - job.lastProgressTick >= MOVE_STALL_TICKS) return WorkerResult.Reason.STALLED;
         return null;
     }
 
-    private static String updateMine(MinecraftServer server, ServerPlayer player, Job job, int tick) {
+    private static WorkerResult.Reason updateMine(PuppetPlayer player, Job job, int tick) {
         ServerLevel level = player.level();
-        if (!level.hasChunkAt(job.blockPos)) return "UNLOADED_CHUNK";
-        BlockState current = level.getBlockState(job.blockPos);
-        if (current.isAir()) return "SUCCESS: BLOCK_REMOVED";
-        if (!current.equals(job.initialBlock)) return "TARGET_CHANGED";
-        if (player.getEyePosition().distanceToSqr(job.goal) > REACH * REACH) return "UNREACHABLE";
-        if (tick - job.startTick > MINE_TIMEOUT_TICKS) return "TIMEOUT: MINE";
-
-        // Give LookAtAction time to orient the fake player before attacking.
-        if (!job.miningStarted && tick - job.startTick >= 3) {
-            if (PuppetBridge.attackHold(server, job.name) <= 0) return "ATTACK_REJECTED";
-            job.miningStarted = true;
+        if (!level.hasChunkAt(job.blockPos)) return WorkerResult.Reason.UNLOADED_CHUNK;
+        BlockState state = level.getBlockState(job.blockPos);
+        if (state.isAir()) return WorkerResult.Reason.BLOCK_REMOVED;
+        if (!state.equals(job.initialBlock)) return WorkerResult.Reason.TARGET_CHANGED;
+        if (player.getEyePosition().distanceToSqr(job.goal) > REACH * REACH) return WorkerResult.Reason.UNREACHABLE;
+        if (tick - job.startTick >= MINE_TIMEOUT_TICKS) return WorkerResult.Reason.TIMEOUT;
+        PuppetBridge.lookAt(player, job.goal);
+        HitResult view = player.pick(REACH, 1.0f, false);
+        if (!(view instanceof BlockHitResult hit) || !hit.getBlockPos().equals(job.blockPos)) {
+            if (tick - job.startTick > INTERACT_TIMEOUT_TICKS) return WorkerResult.Reason.AIM_BLOCKED;
+            // Never hold attack while the raycast points at a different block.
+            if (job.actionTick >= 0) PuppetBridge.stop(player);
+            job.actionTick = -1;
+            return null;
+        }
+        if (job.actionTick < 0) {
+            if (!PuppetBridge.attackHold(player)) return WorkerResult.Reason.ACTION_REJECTED;
+            job.actionTick = tick;
         }
         return null;
     }
 
-    private static ServerPlayer getPuppet(CommandSourceStack source, String name) {
+    private static WorkerResult.Reason updatePlace(PuppetPlayer player, Job job, int tick) {
+        ServerLevel level = player.level();
+        if (!level.hasChunkAt(job.blockPos) || !level.hasChunkAt(job.support)) {
+            return WorkerResult.Reason.UNLOADED_CHUNK;
+        }
+        BlockState state = level.getBlockState(job.blockPos);
+        if (state.is(job.expectedBlock)) return WorkerResult.Reason.BLOCK_PLACED;
+        if (!state.isAir()) return WorkerResult.Reason.TARGET_CHANGED;
+        if (tick - job.startTick >= INTERACT_TIMEOUT_TICKS) return WorkerResult.Reason.TIMEOUT;
+        if (player.getEyePosition().distanceToSqr(job.goal) > REACH * REACH) {
+            return WorkerResult.Reason.UNREACHABLE;
+        }
+        ItemStack stack = player.getMainHandItem();
+        if (!(stack.getItem() instanceof BlockItem held) || held.getBlock() != job.expectedBlock || stack.isEmpty()) {
+            return WorkerResult.Reason.ITEM_MISSING;
+        }
+        PuppetBridge.lookAt(player, job.goal);
+        HitResult view = player.pick(REACH, 1.0f, false);
+        if (!(view instanceof BlockHitResult hit)
+                || !hit.getBlockPos().equals(job.support)
+                || hit.getDirection() != job.supportFace) {
+            return null; // hold off on right click until actual support face is targeted
+        }
+        if (job.actionTick < 0) {
+            if (!PuppetBridge.useOnce(player)) return WorkerResult.Reason.ACTION_REJECTED;
+            job.actionTick = tick;
+        } else if (tick - job.actionTick > 15) {
+            return WorkerResult.Reason.TIMEOUT;
+        }
+        return null;
+    }
+
+    private static Vec3 faceCenter(BlockPos support, Direction outward) {
+        return Vec3.atCenterOf(support).add(
+                outward.getStepX() * 0.501, outward.getStepY() * 0.501, outward.getStepZ() * 0.501);
+    }
+
+    private static boolean available(CommandSourceStack source, PuppetPlayer player) {
+        if (ACTIVE.containsKey(player.getUUID())) {
+            WorkerCommands.fail(source, "BUSY: use /worker stop before issuing another job");
+            return false;
+        }
+        return true;
+    }
+
+    private static PuppetPlayer getPuppet(CommandSourceStack source, String name) {
         if (!WorkerCommands.validName(name)) {
-            WorkerCommands.fail(source, "Invalid name; use 1-16 letters, numbers or underscores");
+            WorkerCommands.fail(source, "INVALID_NAME");
             return null;
         }
         ServerPlayer player = source.getServer().getPlayerList().getPlayerByName(name);
-        if (!(player instanceof PuppetPlayer)) {
-            WorkerCommands.fail(source, "Worker is not an online PuppetPlayer: " + name);
+        if (!(player instanceof PuppetPlayer puppet)) {
+            WorkerCommands.fail(source, "NOT_A_PUPPET: " + name);
             return null;
         }
-        return player;
+        return puppet;
     }
 
     static void clear() {
         ACTIVE.clear();
+        LAST.clear();
     }
 }

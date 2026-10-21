@@ -1,49 +1,46 @@
 package dev.aether0xff.mcworker;
 
+import me.senseiwells.puppet.PuppetPlayer;
+import me.senseiwells.puppet.action.ActionModifier;
+import me.senseiwells.puppet.action.impl.AttackAction;
+import me.senseiwells.puppet.action.impl.UseAction;
+import me.senseiwells.puppet.extensions.PlayerActionsExtension;
 import net.minecraft.commands.CommandSourceStack;
-import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.phys.Vec3;
 
 /**
- * Allowlisted PuppetPlayers command bridge. NEVER send raw GPT/JEV strings here.
- * Commands run on the server thread. Usernames are validated by WorkerCommands.
+ * Typed adapter to PuppetPlayers 26.3.
+ *
+ * Only spawn uses PuppetPlayers' command API (PuppetPlayers performs an async join).
+ * All in-game operations use PuppetPlayer's Java/Kotlin API, not server command strings.
  */
 final class PuppetBridge {
     private PuppetBridge() {}
 
-    static int spawn(CommandSourceStack source, String name) {
-        return issue(source, "puppet " + name + " spawn");
+    static void spawn(CommandSourceStack source, String name) {
+        // The 26.3 command dispatcher returns void; this only submits a request.
+        source.getServer().getCommands().performPrefixedCommand(source, "puppet " + name + " spawn");
     }
 
-    static int move(MinecraftServer server, String name, Vec3 pos) {
-        return issue(server, "puppet " + name
-                + " actions run minecraft:move_to position "
-                + pos.x + " " + pos.y + " " + pos.z);
+    static boolean move(PuppetPlayer player, Vec3 goal) {
+        stop(player);
+        return player.getNavigation().moveTo(goal.x, goal.y, goal.z, 1.0);
     }
 
-    static int aimAt(MinecraftServer server, String name, Vec3 pos) {
-        return issue(server, "puppet " + name
-                + " actions run minecraft:look_at position "
-                + pos.x + " " + pos.y + " " + pos.z + " true");
+    static void lookAt(PuppetPlayer player, Vec3 position) {
+        player.getLookControl().setLookAt(position);
     }
 
-    static int attackHold(MinecraftServer server, String name) {
-        return issue(server, "puppet " + name + " actions run minecraft:attack hold");
+    static boolean attackHold(PuppetPlayer player) {
+        return PlayerActionsExtension.getActions(player).run(new AttackAction(ActionModifier.Hold));
     }
 
-    static void release(MinecraftServer server, String name) {
-        issue(server, "puppet " + name + " actions run minecraft:attack release");
-        issue(server, "puppet " + name + " actions run minecraft:interrupt_look_at");
-        issue(server, "puppet " + name + " actions run minecraft:interrupt_move_to");
+    static boolean useOnce(PuppetPlayer player) {
+        return PlayerActionsExtension.getActions(player).run(new UseAction(ActionModifier.Once));
     }
 
-    private static int issue(MinecraftServer server, String command) {
-        return issue(server.createCommandSourceStack(), command);
-    }
-
-    private static int issue(CommandSourceStack source, String command) {
-        source.getServer().getCommands().performPrefixedCommand(source, command);
-        // Minecraft 26.3 returns void; acceptance is provisional and must be world-verified.
-        return 1;
+    static void stop(PuppetPlayer player) {
+        PlayerActionsExtension.getActions(player).reset();
+        player.getNavigation().stop();
     }
 }

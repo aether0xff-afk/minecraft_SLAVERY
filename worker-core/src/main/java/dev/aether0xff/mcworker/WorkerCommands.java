@@ -35,6 +35,13 @@ final class WorkerCommands {
                                                 ctx.getSource(),
                                                 StringArgumentType.getString(ctx, "name"),
                                                 BlockPosArgument.getBlockPos(ctx, "position"))))))
+                .then(Commands.literal("place")
+                        .then(Commands.argument("name", StringArgumentType.word())
+                                .then(Commands.argument("position", BlockPosArgument.blockPos())
+                                        .executes(ctx -> WorkerJobs.startPlace(
+                                                ctx.getSource(),
+                                                StringArgumentType.getString(ctx, "name"),
+                                                BlockPosArgument.getBlockPos(ctx, "position"))))))
                 .then(Commands.literal("status")
                         .then(Commands.argument("name", StringArgumentType.word())
                                 .executes(ctx -> WorkerJobs.status(
@@ -52,9 +59,9 @@ final class WorkerCommands {
         if (source.getServer().getPlayerList().getPlayerByName(name) != null) {
             return fail(source, "Player already online: " + name);
         }
-        int accepted = PuppetBridge.spawn(source, name);
-        if (accepted <= 0) return fail(source, "Puppet spawn command was rejected");
-        return success(source, "Spawn requested for " + name + " (join may complete asynchronously)");
+        PuppetBridge.spawn(source, name);
+        return success(source, "Spawn request submitted for " + name
+                + ". Confirm join with /worker status; join is asynchronous.");
     }
 
     static boolean validName(String name) {
