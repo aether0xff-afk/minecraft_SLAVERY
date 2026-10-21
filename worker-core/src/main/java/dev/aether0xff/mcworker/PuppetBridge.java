@@ -24,7 +24,7 @@ final class PuppetBridge {
 
     static boolean move(PuppetPlayer player, Vec3 goal) {
         stop(player);
-        return player.getNavigation().moveTo(goal.x, goal.y, goal.z, 1.0);
+        return player.getNavigation().moveTo(goal.x, goal.y, goal.z, 1.0, 0);
     }
 
     static void lookAt(PuppetPlayer player, Vec3 position) {
