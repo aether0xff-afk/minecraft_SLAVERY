@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "minecraft_slavery_worker",
+  "version": "0.1.0-SNAPSHOT",
+  "name": "Minecraft SLAVERY WorkerCore",
+  "description": "Server-side AI worker execution foundation; initial experimental milestone.",
+  "authors": ["aether0xff-afk"],
+  "environment": "server",
+  "entrypoints": {
+    "main": ["dev.aether0xff.mcworker.WorkerCoreMod"]
+  },
+  "depends": {
+    "minecraft": "~26.3",
+    "java": ">=25",
+    "fabricloader": ">=0.19.5",
+    "fabric-api": "*",
+    "fabric-language-kotlin": "*",
+    "puppet-players": ">=2.1.0"
+  }
+}

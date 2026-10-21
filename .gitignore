@@ -1,0 +1,37 @@
+# Gradle / Java
+.gradle/
+build/
+**/build/
+out/
+*.class
+*.log
+.idea/
+*.iml
+.vscode/
+run/
+**/run/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Secrets, bot runtime data
+.env
+.env.*
+!.env.example
+secrets/
+config/*secret*
+worker-state/
+*.db
+*.sqlite
+*.sqlite3
+
+# Minecraft worlds and backups
+world/
+world_*/
+backups/
+eula.txt
+server.properties
