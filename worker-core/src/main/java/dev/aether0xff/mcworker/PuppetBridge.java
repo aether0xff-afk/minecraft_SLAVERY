@@ -42,6 +42,8 @@ final class PuppetBridge {
     }
 
     private static int issue(CommandSourceStack source, String command) {
-        return source.getServer().getCommands().performPrefixedCommand(source, command);
+        source.getServer().getCommands().performPrefixedCommand(source, command);
+        // Minecraft 26.3 returns void; acceptance is provisional and must be world-verified.
+        return 1;
     }
 }

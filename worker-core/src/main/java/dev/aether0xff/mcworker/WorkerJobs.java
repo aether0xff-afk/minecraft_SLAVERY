@@ -114,7 +114,7 @@ final class WorkerJobs {
                 + (source.getServer().getTickCount() - job.startTick) + " ticks";
         Vec3 p = player.position();
         return WorkerCommands.success(source, name + " " + state
-                + " dimension=" + player.level().dimension().location()
+                + " dimension=" + player.level().dimension()
                 + " pos=" + String.format(java.util.Locale.ROOT, "(%.1f, %.1f, %.1f)", p.x, p.y, p.z));
     }
 

@@ -8,13 +8,15 @@ import net.minecraft.commands.arguments.coordinates.BlockPosArgument;
 import net.minecraft.commands.arguments.coordinates.Vec3Argument;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.permissions.PermissionLevel;
+import net.minecraft.resources.Identifier;
 
 final class WorkerCommands {
     private WorkerCommands() {}
 
     static void register(CommandDispatcher<CommandSourceStack> dispatcher) {
         dispatcher.register(Commands.literal("worker")
-                .requires(source -> source.hasPermission(PermissionLevel.GAMEMASTERS))
+                .requires(source -> source.checkPermission(
+                        Identifier.withDefaultNamespace("worker"), PermissionLevel.GAMEMASTERS))
                 .then(Commands.literal("spawn")
                         .then(Commands.argument("name", StringArgumentType.word())
                                 .executes(ctx -> spawn(ctx.getSource(),
