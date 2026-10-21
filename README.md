@@ -2,7 +2,7 @@
 
 A Fabric **Minecraft Java Edition 26.3** research project for autonomous survival-mode workers that run **inside a dedicated server**, without a separate Minecraft client.
 
-> **Status: initial scaffold / experimental.** This repository does **not** yet contain a trained JEV policy, GPT integration, a complete farming/building bot, or a verified server deployment.
+> **Status: compile-verified Milestone 1 (partial) / experimental.** This repository does **not** yet contain a trained JEV policy, GPT integration, a complete farming/building bot, or a verified server deployment.
 
 ## Architecture
 
@@ -25,12 +25,13 @@ WorkerCore (Fabric, Java 25) ---> PuppetPlayers 2.1.0+26.3
 ## First milestone
 
 - `/worker spawn <name>` — delegate puppet spawn to PuppetPlayers.
-- `/worker move <name> <x> <y> <z>` — enqueue movement, then **verify actual arrival**.
-- `/worker mine <name> <x> <y> <z>` — attempt a nearby block mining operation with actual player actions and verify block removal.
+- `/worker move <name> <x> <y> <z>` — navigate at most 48 blocks to a loaded target, then **verify actual arrival**.
+- `/worker mine <name> <x> <y> <z>` — mine an already-reachable ordinary block, verifying the actual target.
+- `/worker place <name> <x> <y> <z>` — place the held BlockItem against existing support, verifying the resulting block and inventory consumption.
 - `/worker status <name>` — view worker position and job status.
 - `/worker stop <name>` — cancel tracked work and release inputs.
 
-All commands require game-master/operator permission. Mine works only for already reachable blocks in this milestone. **Do not run on a valuable survival world before testing on a backup.**
+All commands require game-master/operator permission. Mine and place operate only on already reachable loaded blocks; no automatic approach, resource refill or tool selection yet. **Do not run on a valuable survival world before testing on a backup.**
 
 ## Requirements
 

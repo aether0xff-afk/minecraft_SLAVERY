@@ -8,15 +8,19 @@
 - [x] Automated build workflow.
 - [x] GitHub Actions compile success on JDK 25 / Gradle 9.6.0 (2026-10-21).
 - [x] Downloadable worker-core-26.3 artifact verified in successful run 39559811836 (2026-10-21).
-- [ ] Disposable-server smoke tests.
-- [ ] Fix any version-specific build or runtime issues found by CI.
+- [ ] One disposable-server integration smoke test **when needed for real deployment**.
+- [x] Initial 26.3 API compilation issues corrected in CI.
 
 ## Milestone 1 — deterministic worker
 
-- Safe position/path management with path failure diagnostics.
-- Mine, place, harvest and interact primitives; inventory-safe tool selection.
-- Success/failure enums and tests, rather than display strings.
-- Permission/region boundaries, resource budgets, and emergency-stop guarantees.
+- [x] Initial bounded move with stall and destination validation (48-block limit).
+- [x] Initial guarded mine and solid-block place primitives (no auto tool selection).
+- [x] Structured result enums and last-result reporting.
+- [x] Stop resets active PuppetPlayers actions.
+- [ ] Harvest/replant and generic entity interaction.
+- [ ] Inventory-safe tool selection and durability thresholds.
+- [ ] Permission/region boundaries, hazard policy and work budgets.
+- [ ] Automated checks for policy invariants (when implemented).
 
 ## Milestone 2 — useful survival work
 
