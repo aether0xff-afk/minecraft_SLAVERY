@@ -18,3 +18,12 @@ jobs:
           gradle-version: '9.6.0'
       - name: Compile Fabric WorkerCore
         run: gradle :worker-core:build --no-daemon --stacktrace
+      - name: Upload test-server mod JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: worker-core-26.3
+          path: |
+            worker-core/build/libs/*.jar
+            !worker-core/build/libs/*-sources.jar
+            !worker-core/build/libs/*-dev.jar
+          if-no-files-found: error

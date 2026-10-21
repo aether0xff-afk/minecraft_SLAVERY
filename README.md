@@ -51,7 +51,10 @@ gradle :worker-core:build
 gradle wrapper --gradle-version 9.6.0
 ```
 
-Copy the built WorkerCore JAR to your **test** server's `mods/` folder, alongside the runtime dependencies above. Check `docs/GETTING_STARTED.md` before testing. The repository CI tries to build the Java module; a green CI run is required before calling it build-verified.
+Copy the built WorkerCore JAR to your **test** server's `mods/` folder, alongside the runtime dependencies above. Check `docs/GETTING_STARTED.md` before testing. The repository CI builds the Java module and uploads the compiled test-server mod as the
+**worker-core-26.3** artifact on the [Actions page](https://github.com/aether0xff-afk/minecraft_SLAVERY/actions).
+Download and unzip that artifact and copy only the runtime JAR to the server's mods folder.
+A green CI build verifies compilation, **not** Minecraft server runtime behavior.
 
 ## Documentation
 

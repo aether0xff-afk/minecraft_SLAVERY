@@ -20,7 +20,9 @@ gradle :worker-core:build
 ~~~
 
 The build uses Gradle 9.6.0. There is no committed Gradle wrapper binary yet.
-For CI, see GitHub Actions.
+Alternatively, open the latest successful GitHub Actions build, download the
+**worker-core-26.3** artifact, extract the JAR, and skip local Gradle installation.
+Use the test world first; a successful build is not a runtime compatibility test.
 
 Copy the WorkerCore JAR from worker-core/build/libs to the dedicated server's mods folder.
 Do not copy a sources JAR. Install Fabric API, Fabric Language Kotlin, and PuppetPlayers.

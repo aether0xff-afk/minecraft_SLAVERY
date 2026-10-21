@@ -6,7 +6,9 @@
 - [x] PuppetPlayers bridge and permission-protected worker commands.
 - [x] Minimal MOVE/MINE task lifecycle and postcondition verification.
 - [x] Automated build workflow.
-- [ ] CI green and disposable-server smoke tests.
+- [x] GitHub Actions compile success on JDK 25 / Gradle 9.6.0 (2026-10-21).
+- [ ] Downloadable GitHub Actions artifact verified after workflow update.
+- [ ] Disposable-server smoke tests.
 - [ ] Fix any version-specific build or runtime issues found by CI.
 
 ## Milestone 1 — deterministic worker
